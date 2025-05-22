@@ -134,6 +134,22 @@ impl GlobalProfilerUi {
     pub fn global_frame_view(&self) -> &GlobalFrameView {
         &self.global_frame_view
     }
+
+    /// Returns `true` if profiling is paused.
+    pub fn is_paused(&self) -> bool {
+        self.profiler_ui.paused.is_some()
+    }
+
+    /// Pause profiling.
+    pub fn set_paused(&mut self, paused: bool) {
+        if paused {
+            let mut frame_view = self.global_frame_view.lock();
+            self.profiler_ui
+                .pause_and_select_latest(&mut MaybeMutRef::MutRef(&mut frame_view));
+        } else {
+            self.profiler_ui.reset();
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -390,6 +406,18 @@ impl ProfilerUi {
             });
         }
     }
+    fn pause_and_select_latest(&mut self, frame_view: &mut MaybeMutRef<'_, FrameView>) {
+        let latest = frame_view.latest_frame();
+        if let Some(latest) = latest {
+            #[allow(irrefutable_let_patterns)]
+            if let Ok(latest) = latest.unpacked() {
+                self.pause_and_select(
+                    frame_view,
+                    SelectedFrames::from_vec1(frame_view.scope_collection(), vec1::vec1![latest]),
+                );
+            }
+        }
+    }
 
     fn is_selected(
         paused: Option<&Paused>,
@@ -524,18 +552,7 @@ impl ProfilerUi {
                         .clicked()
                         || space_pressed
                     {
-                        let latest = frame_view.latest_frame();
-                        if let Some(latest) = latest {
-                            if let Ok(latest) = latest.unpacked() {
-                                self.pause_and_select(
-                                    frame_view,
-                                    SelectedFrames::from_vec1(
-                                        frame_view.scope_collection(),
-                                        vec1::vec1![latest],
-                                    ),
-                                );
-                            }
-                        }
+                        self.pause_and_select_latest(frame_view);
                     }
                 });
             }
