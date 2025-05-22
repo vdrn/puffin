@@ -1,10 +1,12 @@
 use std::vec;
 
-use super::{SelectedFrames, ERROR_COLOR, HOVER_COLOR};
-use crate::filter::Filter;
 use egui::*;
+use emath::GuiRounding;
 use indexmap::IndexMap;
+
 use puffin::*;
+
+use crate::{filter::Filter, SelectedFrames, ERROR_COLOR, HOVER_COLOR};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -260,7 +262,7 @@ pub fn ui(
 
             ui.group(|ui| {
                 ui.strong("Visible Threads");
-                egui::ScrollArea::vertical().id_source("f").show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("f").show(ui, |ui| {
                     for f in frames.threads.keys() {
                         let entry = options
                             .flamegraph_threads
@@ -723,7 +725,7 @@ fn paint_record(
             start_x + 4.0,
             top_y + 0.5 * (options.rect_height - info.text_height),
         );
-        let pos = painter.round_pos_to_pixels(pos);
+        let pos = pos.round_to_pixels(painter.pixels_per_point());
         const TEXT_COLOR: Color32 = Color32::BLACK;
         painter.text(
             pos,
