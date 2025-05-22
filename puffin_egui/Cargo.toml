@@ -1,6 +1,6 @@
 [package]
 name = "puffin_egui"
-version = "0.29.0"
+version = "0.31.0"
 authors = ["Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"]
 categories = ["development-tools::profiling", "game-development", "gui"]
 description = "Show puffin profiler flamegraph in-game using egui"
@@ -22,8 +22,9 @@ include = [
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-egui = { version = "0.28.0", default-features = false }
-egui_extras = { version = "0.28.0", default-features = false, features = ["serde"] }
+egui = { version = "0.31", default-features = false }
+
+egui_extras = { version = "0.31", default-features = false, features = ["serde"] }
 indexmap = { version = "2.1.0", features = ["serde"] }
 natord = "1.0.9"
 once_cell = "1.7"
@@ -35,10 +36,14 @@ time = { version = "0.3.17", default-features = false, features = [
   "macros",
 ] }
 vec1 = "1.8"
-web-time = "0.2"
+web-time = "1.1"
 
 [dev-dependencies]
-eframe = { version = "0.28.0", default-features = false, features = [
+eframe = { version = "0.31.0", default-features = false, features = [
+  # Required for Linux support:  https://github.com/emilk/egui/blob/b8334f365be7325ce2974bd1cefc8abd5326299d/crates/eframe/Cargo.toml#L38
+  "x11",
+  "wayland", 
+
   "default_fonts",
   "glow",
   "persistence",
