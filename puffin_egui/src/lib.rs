@@ -146,6 +146,11 @@ pub struct AvailableFrames {
     pub uniq: Vec<Arc<FrameData>>,
     pub stats: FrameStats,
 }
+pub struct AvailableFramesRef<'a> {
+    pub recent: Vec<&'a FrameData>,
+    pub slowest: Vec<&'a FrameData>,
+    pub stats: FrameStats,
+}
 
 impl AvailableFrames {
     fn latest(frame_view: &FrameView) -> Self {
@@ -386,10 +391,14 @@ impl ProfilerUi {
         }
     }
 
-    fn is_selected(&self, frame_view: &FrameView, frame_index: u64) -> bool {
-        if let Some(paused) = &self.paused {
+    fn is_selected(
+        paused: Option<&Paused>,
+        latest_frame: Option<&FrameData>,
+        frame_index: u64,
+    ) -> bool {
+        if let Some(paused) = paused {
             paused.selected.contains(frame_index)
-        } else if let Some(latest_frame) = frame_view.latest_frame() {
+        } else if let Some(latest_frame) = latest_frame {
             latest_frame.frame_index() == frame_index
         } else {
             false
@@ -416,8 +425,13 @@ impl ProfilerUi {
         let time_since_last_pack = last_pack_pass.elapsed();
         if time_since_last_pack > web_time::Duration::from_secs(1) {
             puffin::profile_scope!("pack_pass");
+            let latest_frame = frame_view.latest_frame();
             for frame in self.all_known_frames(frame_view) {
-                if !self.is_selected(frame_view, frame.frame_index()) {
+                if !Self::is_selected(
+                    self.paused.as_ref(),
+                    latest_frame.as_deref(),
+                    frame.frame_index(),
+                ) {
                     frame.pack();
                 }
             }
@@ -581,12 +595,39 @@ impl ProfilerUi {
         &mut self,
         ui: &mut egui::Ui,
         frame_view: &mut MaybeMutRef<'_, FrameView>,
-    ) -> Option<Arc<FrameData>> {
+    ) -> Option<FrameData> {
         puffin::profile_function!();
 
-        let frames = self.frames(frame_view);
+        let slowest_num_fit =
+            (ui.available_size_before_wrap().x / self.flamegraph_options.frame_width).floor();
+        let slowest_num_fit = (slowest_num_fit as usize).at_least(1);
+
+        let latest_frame = frame_view.latest_frame().clone();
+
+        // we put this back later
+        let paused = self.paused.take();
+        let mut max_recent = frame_view.max_recent();
+
+        let mut frames = paused.as_ref().map_or_else(
+            || AvailableFramesRef {
+                recent: frame_view.recent_frames().map(Arc::as_ref).collect(),
+                slowest: frame_view
+                    .slowest_frames_by_duration()
+                    .take(slowest_num_fit)
+                    .map(Arc::as_ref)
+                    .collect(),
+                stats: frame_view.stats(),
+            },
+            |paused| AvailableFramesRef {
+                recent: paused.frames.recent.iter().map(Arc::as_ref).collect(),
+                slowest: paused.frames.slowest.iter().map(Arc::as_ref).collect(),
+                stats: FrameStats::from_frames(paused.frames.recent.iter().map(Arc::as_ref)),
+            },
+        );
 
         let mut hovered_frame = None;
+        let mut new_selection = vec![];
+        let mut clear_slowest = false;
 
         egui::Grid::new("frame_grid").num_columns(2).show(ui, |ui| {
             ui.label("");
@@ -594,7 +635,7 @@ impl ProfilerUi {
                 ui.label("Click to select a frame, or drag to select multiple frames.");
 
                 ui.menu_button("🔧 Settings", |ui| {
-                    let uniq = &frames.uniq;
+                    let recent = &frames.recent;
                     let stats = &frames.stats;
 
                     ui.label(format!(
@@ -604,11 +645,10 @@ impl ProfilerUi {
                         stats.bytes_of_ram_used() as f64 * 1e-6
                     ));
 
-                    if let Some(frame_view) = frame_view.as_mut() {
-                        max_frames_ui(ui, frame_view, uniq);
-                        if self.paused.is_none() {
-                            max_num_latest_ui(ui, &mut self.max_num_latest);
-                        }
+                    max_recent = max_frames_ui(ui, recent, stats.bytes_of_ram_used(), max_recent);
+
+                    if paused.is_none() {
+                        max_num_latest_ui(ui, &mut self.max_num_latest);
                     }
                 });
             });
@@ -621,14 +661,17 @@ impl ProfilerUi {
                     .stick_to_right(true)
                     .drag_to_scroll(false)
                     .show(ui, |ui| {
-                        let slowest_visible = self.show_frame_list(
+                        let (slowest_visible, recent_new_selection) = self.show_frame_list(
                             ui,
-                            frame_view,
+                            paused.as_ref(),
+                            latest_frame.as_deref(),
                             &frames.recent,
                             false,
                             &mut hovered_frame,
                             self.slowest_frame,
                         );
+                        new_selection = recent_new_selection;
+
                         // quickly, but smoothly, normalize frame height:
                         self.slowest_frame = lerp(self.slowest_frame..=slowest_visible as f32, 0.2);
                     });
@@ -640,50 +683,67 @@ impl ProfilerUi {
                 ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
                 ui.add_space(16.0); // make it a bit more centered
                 ui.label("Slowest:");
-                if let Some(frame_view) = frame_view.as_mut() {
-                    if ui.button("Clear").clicked() {
-                        frame_view.clear_slowest();
-                    }
+                if ui.button("Clear").clicked() {
+                    clear_slowest = true;
                 }
             });
 
             // Show as many slow frames as we fit in the view:
             Frame::dark_canvas(ui.style()).show(ui, |ui| {
-                let num_fit = (ui.available_size_before_wrap().x
-                    / self.flamegraph_options.frame_width)
-                    .floor();
-                let num_fit = (num_fit as usize).at_least(1).at_most(frames.slowest.len());
-                let slowest_of_the_slow = puffin::select_slowest(&frames.slowest, num_fit);
+                let max_slowest = slowest_num_fit.at_most(frames.slowest.len());
+
+                let slowest_of_the_slow = &mut frames.slowest[0..max_slowest];
+                slowest_of_the_slow.sort_by_key(|frame| frame.frame_index());
 
                 let mut slowest_frame = 0;
-                for frame in &slowest_of_the_slow {
+                for frame in slowest_of_the_slow.iter() {
                     slowest_frame = frame.duration_ns().max(slowest_frame);
                 }
 
-                self.show_frame_list(
+                let (_, slowest_new_selection) = self.show_frame_list(
                     ui,
-                    frame_view,
-                    &slowest_of_the_slow,
+                    paused.as_ref(),
+                    latest_frame.as_deref(),
+                    slowest_of_the_slow,
                     true,
                     &mut hovered_frame,
                     slowest_frame as f32,
                 );
+                if !slowest_new_selection.is_empty() {
+                    new_selection = slowest_new_selection;
+                }
             });
         });
+
+        self.paused = paused;
+
+        if let Some(new_selection) =
+            SelectedFrames::try_from_iter(frame_view.scope_collection(), new_selection.into_iter())
+        {
+            self.pause_and_select(frame_view, new_selection);
+        }
+
+        if let Some(frame_view) = frame_view.as_mut() {
+            frame_view.set_max_recent(max_recent);
+            if clear_slowest {
+                frame_view.clear_slowest();
+            }
+        }
 
         hovered_frame
     }
 
-    /// Returns the slowest visible frame
-    fn show_frame_list(
+    /// Returns the `(slowest_visible_frame, new_selection)`
+    fn show_frame_list<'a>(
         &mut self,
         ui: &mut egui::Ui,
-        frame_view: &FrameView,
-        frames: &[Arc<FrameData>],
+        paused: Option<&Paused>,
+        latest_frame: Option<&FrameData>,
+        frames: &[&'a FrameData],
         tight: bool,
-        hovered_frame: &mut Option<Arc<FrameData>>,
+        hovered_frame: &mut Option<FrameData>,
         slowest_frame: f32,
-    ) -> NanoSecond {
+    ) -> (NanoSecond, Vec<Arc<UnpackedFrameData>>) {
         let frame_width_including_spacing = self.flamegraph_options.frame_width;
 
         let num_frames = frames[frames.len() - 1].frame_index() + 1 - frames[0].frame_index();
@@ -701,7 +761,7 @@ impl ProfilerUi {
         let frame_spacing = 2.0;
         let frame_width = frame_width_including_spacing - frame_spacing;
 
-        let viewing_multiple_frames = if let Some(paused) = &self.paused {
+        let viewing_multiple_frames = if let Some(paused) = &paused {
             paused.selected.frames.len() > 1 && !self.flamegraph_options.merge_scopes
         } else {
             false
@@ -749,7 +809,7 @@ impl ProfilerUi {
                 let duration = frame.duration_ns();
                 slowest_visible_frame = duration.max(slowest_visible_frame);
 
-                let is_selected = self.is_selected(frame_view, frame.frame_index());
+                let is_selected = Self::is_selected(paused, latest_frame, frame.frame_index());
 
                 let is_hovered = if let Some(mouse_pos) = response.hover_pos() {
                     !response.dragged() && frame_rect.contains(mouse_pos)
@@ -759,7 +819,7 @@ impl ProfilerUi {
 
                 // preview when hovering is really annoying when viewing multiple frames
                 if is_hovered && !is_selected && !viewing_multiple_frames {
-                    *hovered_frame = Some(frame.clone());
+                    *hovered_frame = Some((*frame).clone());
                     egui::show_tooltip_at_pointer(
                         ui.ctx(),
                         ui.layer_id(),
@@ -811,13 +871,7 @@ impl ProfilerUi {
             }
         }
 
-        if let Some(new_selection) =
-            SelectedFrames::try_from_iter(frame_view.scope_collection(), new_selection.into_iter())
-        {
-            self.pause_and_select(frame_view, new_selection);
-        }
-
-        slowest_visible_frame
+        (slowest_visible_frame, new_selection)
     }
 }
 
@@ -874,10 +928,13 @@ fn format_time(nanos: NanoSecond) -> Option<String> {
     }
 }
 
-fn max_frames_ui(ui: &mut egui::Ui, frame_view: &mut FrameView, uniq: &[Arc<FrameData>]) {
-    let stats = frame_view.stats();
-    let bytes = stats.bytes_of_ram_used();
-
+/// Returns the new memory length
+fn max_frames_ui(
+    ui: &mut egui::Ui,
+    uniq: &[&FrameData],
+    bytes: usize,
+    mut memory_length: usize,
+) -> usize {
     let frames_per_second = if let (Some(first), Some(last)) = (uniq.first(), uniq.last()) {
         let nanos = last.range_ns().1 - first.range_ns().0;
         let seconds = nanos as f64 * 1e-9;
@@ -890,9 +947,7 @@ fn max_frames_ui(ui: &mut egui::Ui, frame_view: &mut FrameView, uniq: &[Arc<Fram
     ui.horizontal(|ui| {
         ui.label("Max recent frames to store:");
 
-        let mut memory_length = frame_view.max_recent();
         ui.add(egui::Slider::new(&mut memory_length, 10..=100_000).logarithmic(true));
-        frame_view.set_max_recent(memory_length);
 
         ui.label(format!(
             "(≈ {:.1} minutes, ≈ {:.0} MB)",
@@ -900,6 +955,7 @@ fn max_frames_ui(ui: &mut egui::Ui, frame_view: &mut FrameView, uniq: &[Arc<Fram
             memory_length as f64 * bytes as f64 / uniq.len() as f64 * 1e-6,
         ));
     });
+    memory_length
 }
 
 fn max_num_latest_ui(ui: &mut egui::Ui, max_num_latest: &mut usize) {

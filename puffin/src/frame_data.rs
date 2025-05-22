@@ -99,6 +99,7 @@ impl UnpackedFrameData {
 /// If you turn on the the "packing" feature, this will compress the
 /// profiling data in order to save RAM.
 #[cfg(not(feature = "packing"))]
+#[derive(Clone)]
 pub struct FrameData {
     unpacked_frame: Arc<UnpackedFrameData>,
     /// Scopes that were registered during this frame.
@@ -224,6 +225,7 @@ impl CompressionKind {
 
 /// Packed with bincode and compressed.
 #[cfg(feature = "packing")]
+#[derive(Clone)]
 struct PackedStreams {
     compression_kind: CompressionKind,
     bytes: Vec<u8>,
@@ -340,6 +342,18 @@ pub struct FrameData {
     pub full_delta: bool,
 }
 
+#[cfg(feature = "packing")]
+impl Clone for FrameData {
+    fn clone(&self) -> Self {
+        Self {
+            meta: self.meta.clone(),
+            data: RwLock::new((*self.data.read()).clone()),
+            scope_delta: self.scope_delta.clone(),
+            full_delta: self.full_delta,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PackingInfo {
     /// Number of bytes used when unpacked, if has unpacked.
@@ -349,6 +363,7 @@ pub struct PackingInfo {
 }
 
 #[cfg(feature = "packing")]
+#[derive(Clone)]
 enum FrameDataState {
     /// Unpacked data.
     Unpacked(Arc<UnpackedFrameData>),

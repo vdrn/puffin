@@ -162,6 +162,12 @@ impl FrameView {
         self.slowest_by_index.iter().map(|f| &f.0)
     }
 
+    /// The slowest frames so far (or since last call to [`Self::clear_slowest()`])
+    /// in duration order.
+    pub fn slowest_frames_by_duration(&self) -> impl Iterator<Item = &Arc<FrameData>> {
+        self.slowest_by_duration.iter().map(|f| &f.0)
+    }
+
     /// All frames sorted chronologically.
     pub fn all_uniq(&self) -> impl Iterator<Item = &Arc<FrameData>> {
         Itertools::merge(self.recent.iter(), self.slowest_by_index.iter())
