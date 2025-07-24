@@ -376,6 +376,7 @@ enum FrameDataState {
 }
 
 #[cfg(feature = "packing")]
+#[allow(dead_code)]
 impl FrameDataState {
     fn unpacked_size(&self) -> Option<usize> {
         match self {
@@ -465,6 +466,7 @@ impl FrameDataState {
 }
 
 #[cfg(feature = "packing")]
+#[allow(dead_code)]
 impl FrameData {
     /// Create a new [`FrameData`].
     pub fn new(

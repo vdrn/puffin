@@ -701,23 +701,23 @@ fn paint_record(
 
         let scope_name = scope_details.name();
 
-        let duration_ms = to_ms(scope_data.duration_ns);
+        let duration_fmt = duration_fmt(scope_data.duration_ns, false);
         let text = if scope_data.data.is_empty() {
             format!(
-                "{}{} {:6.3} ms {}",
+                "{}{} {} {}",
                 prefix,
                 scope_name.as_str(),
-                duration_ms,
+                duration_fmt,
                 suffix
             )
         } else {
             // Note: we don't escape the scope data (`{:?}`), because that often leads to ugly extra backslashes.
             format!(
-                "{}{} '{}' {:6.3} ms {}",
+                "{}{} '{}' {} {}",
                 prefix,
                 scope_name.as_str(),
                 scope_data.data,
-                duration_ms,
+                duration_fmt,
                 suffix
             )
         };
@@ -757,6 +757,19 @@ fn color_from_duration(ns: NanoSecond) -> Rgba {
 fn to_ms(ns: NanoSecond) -> f64 {
     ns as f64 * 1e-6
 }
+fn duration_fmt(ns: NanoSecond, large: bool) -> String {
+    if ns < 100_000 {
+        return format!("{:4.3} μs", ns as f64 * 1e-3);
+    }
+    if ns < 1_000_000 {
+        return format!("{:4.1} μs", ns as f64 * 1e-3);
+    }
+    let ms = ns as f64 * 1e-6;
+    if large {
+        return format!("{:7.3} ms", ms);
+    }
+    format!("{:6.3} ms", ms)
+}
 
 fn paint_scope(
     info: &Info<'_>,
@@ -789,8 +802,8 @@ fn paint_scope(
                     paint_scope_details(ui, scope.id, scope.record.data, scope_details);
 
                     ui.monospace(format!(
-                        "duration: {:7.3} ms",
-                        to_ms(scope.record.duration_ns)
+                        "duration: {}",
+                        duration_fmt(scope.record.duration_ns, true)
                     ));
                     ui.monospace(format!("children: {num_children:3}"));
                 },
@@ -886,7 +899,7 @@ fn paint_scope_details(ui: &mut Ui, scope_id: ScopeId, data: &str, scope_details
 
             if !data.is_empty() {
                 ui.monospace("data");
-                ui.monospace(data.as_str());
+                ui.monospace(data);
                 ui.end_row();
             }
 
@@ -913,20 +926,23 @@ fn merge_scope_tooltip(
     if num_frames <= 1 {
         if merge.num_pieces <= 1 {
             ui.monospace(format!(
-                "duration: {:7.3} ms",
-                to_ms(merge.duration_per_frame_ns)
+                "duration: {} ",
+                duration_fmt(merge.duration_per_frame_ns, true)
             ));
         } else {
             ui.monospace(format!("sum of {} scopes", merge.num_pieces));
             ui.monospace(format!(
-                "total: {:7.3} ms",
-                to_ms(merge.duration_per_frame_ns)
+                "total: {}",
+                duration_fmt(merge.duration_per_frame_ns, true)
             ));
             ui.monospace(format!(
-                "mean:  {:7.3} ms",
-                to_ms(merge.duration_per_frame_ns) / (merge.num_pieces as f64),
+                "mean:  {}",
+                duration_fmt(
+                    merge.duration_per_frame_ns / merge.num_pieces as NanoSecond,
+                    true
+                )
             ));
-            ui.monospace(format!("max:   {:7.3} ms", to_ms(merge.max_duration_ns)));
+            ui.monospace(format!("max:   {}", duration_fmt(merge.max_duration_ns,true)));
         }
     } else {
         ui.monospace(format!(
@@ -946,16 +962,16 @@ fn merge_scope_tooltip(
         }
 
         ui.monospace(format!(
-            "{:7.3} ms / frame",
-            to_ms(merge.duration_per_frame_ns)
+            "{} / frame",
+            duration_fmt(merge.duration_per_frame_ns, true)
         ));
         ui.monospace(format!(
-            "{:7.3} ms / call",
-            to_ms(merge.total_duration_ns) / (merge.num_pieces as f64),
+            "{} / call",
+            duration_fmt(merge.total_duration_ns / merge.num_pieces as NanoSecond, true),
         ));
         ui.monospace(format!(
-            "{:7.3} ms for slowest call",
-            to_ms(merge.max_duration_ns)
+            "{} for slowest call",
+            duration_fmt(merge.max_duration_ns, true)
         ));
     }
 }

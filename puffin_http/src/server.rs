@@ -1,4 +1,5 @@
 use anyhow::Context as _;
+use core::sync::atomic::AtomicBool;
 use puffin::{FrameSinkId, FrameView, GlobalProfiler};
 use std::{
     io::Write,
@@ -22,6 +23,7 @@ pub struct Server {
     join_handle: Option<std::thread::JoinHandle<()>>,
     num_clients: Arc<AtomicUsize>,
     sink_remove: fn(FrameSinkId) -> (),
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Server {
@@ -241,25 +243,29 @@ impl Server {
         let num_clients = Arc::new(AtomicUsize::default());
         let num_clients_cloned = num_clients.clone();
 
+        let shutdown = Arc::new(AtomicBool::new(false));
         let join_handle = std::thread::Builder::new()
             .name("puffin-server".to_owned())
-            .spawn(move || {
-                let mut server_impl = PuffinServerImpl {
-                    tcp_listener,
-                    clients: Default::default(),
-                    num_clients: num_clients_cloned,
-                    send_all_scopes: false,
-                    frame_view: Default::default(),
-                };
+            .spawn({
+                let shutdown = shutdown.clone();
+                move || {
+                    let mut server_impl = PuffinServerImpl {
+                        tcp_listener,
+                        clients: Default::default(),
+                        num_clients: num_clients_cloned,
+                        send_all_scopes: false,
+                        frame_view: Default::default(),
+                    };
 
-                while let Ok(frame) = rx.recv() {
-                    server_impl.frame_view.add_frame(frame.clone());
-                    if let Err(err) = server_impl.accept_new_clients() {
-                        log::warn!("puffin server failure: {}", err);
-                    }
+                    while let Ok(frame) = rx.recv() {
+                        server_impl.frame_view.add_frame(frame.clone());
+                        if let Err(err) = server_impl.accept_new_clients(&shutdown) {
+                            log::warn!("puffin server failure: {}", err);
+                        }
 
-                    if let Err(err) = server_impl.send(&frame) {
-                        log::warn!("puffin server failure: {}", err);
+                        if let Err(err) = server_impl.send(&frame) {
+                            log::warn!("puffin server failure: {}", err);
+                        }
                     }
                 }
             })
@@ -271,6 +277,7 @@ impl Server {
         }));
 
         Ok(Server {
+            shutdown,
             sink_id,
             join_handle: Some(join_handle),
             num_clients,
@@ -289,6 +296,7 @@ impl Drop for Server {
         // Remove ourselves from the profiler
         (self.sink_remove)(self.sink_id);
 
+        self.shutdown.store(true, Ordering::Release);
         // Take care to send everything before we shut down:
         if let Some(join_handle) = self.join_handle.take() {
             join_handle.join().ok();
@@ -329,7 +337,7 @@ struct PuffinServerImpl {
 }
 
 impl PuffinServerImpl {
-    fn accept_new_clients(&mut self) -> anyhow::Result<()> {
+    fn accept_new_clients(&mut self, shutdown: &AtomicBool) -> anyhow::Result<()> {
         loop {
             match self.tcp_listener.accept() {
                 Ok((tcp_stream, client_addr)) => {
@@ -356,7 +364,15 @@ impl PuffinServerImpl {
                     self.num_clients.store(self.clients.len(), Ordering::SeqCst);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    break; // Nothing to do for now.
+                    // Nothing to do for now.
+                    if self.clients.is_empty() {
+                        if shutdown.load(Ordering::Acquire) {
+                            break;
+                        }
+                        continue;
+                    } else {
+                        break;
+                    }
                 }
                 Err(e) => {
                     anyhow::bail!("puffin server TCP error: {:?}", e);
